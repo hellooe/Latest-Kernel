@@ -1,0 +1,139 @@
+name: Reusable Kernel Build
+
+on:
+  workflow_call:
+    inputs:
+      kernel_repo:
+        description: 'Kernel source repository URL or "stable" for latest stable from kernel.org'
+        required: true
+        type: string
+      kernel_ref:
+        description: 'Branch/tag/commit to checkout (ignored if kernel_repo is "stable")'
+        required: false
+        default: ''
+        type: string
+      config_file:
+        description: 'Path to .config file in repo (e.g., "config")'
+        required: false
+        default: 'config'
+        type: string
+      release_tag_prefix:
+        description: 'Prefix for release tag (e.g., "bbrv3-" or "v")'
+        required: true
+        type: string
+      release_name_prefix:
+        description: 'Prefix for release name'
+        required: true
+        type: string
+    secrets:
+      GH_TOKEN:
+        description: 'GitHub token for creating releases'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository (for config file)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Cache & install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: build-essential libncurses-dev bison flex libssl-dev libelf-dev dwarves bc rsync debhelper git jq
+          version: 1.0
+
+      - name: Setup swap (4GB)
+        run: |
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Obtain kernel source
+        id: source
+        run: |
+          if [[ "${{ inputs.kernel_repo }}" == "stable" ]]; then
+            LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.stable == true) | .version' | sort -V | tail -1)
+            MAJOR=$(echo "$LATEST" | cut -d. -f1)
+            wget https://cdn.kernel.org/pub/linux/kernel/v$MAJOR.x/linux-$LATEST.tar.xz
+            tar -xf linux-$LATEST.tar.xz
+            mv linux-$LATEST linux-source
+            echo "version=$LATEST" >> $GITHUB_OUTPUT
+            echo "source_type=stable" >> $GITHUB_OUTPUT
+          else
+            if [[ -n "${{ inputs.kernel_ref }}" ]]; then
+              git clone --depth 1 --branch "${{ inputs.kernel_ref }}" "${{ inputs.kernel_repo }}" linux-source
+            else
+              git clone --depth 1 "${{ inputs.kernel_repo }}" linux-source
+            fi
+            echo "source_type=git" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure kernel
+        working-directory: ./linux-source
+        run: |
+          CONFIG_PATH="../${{ inputs.config_file }}"
+          if [[ ! -f "$CONFIG_PATH" ]]; then
+            echo "ERROR: Config file not found: $CONFIG_PATH"
+            exit 1
+          fi
+          if [[ -f "arch/x86/configs/x86_64_defconfig" ]]; then
+            make x86_64_defconfig
+          else
+            make defconfig
+          fi
+          cp "$CONFIG_PATH" .config
+          make olddefconfig
+          cp .config ../final.config
+
+      - name: Get final kernel version
+        id: final_version
+        working-directory: ./linux-source
+        run: |
+          if [[ "${{ steps.source.outputs.source_type }}" == "stable" ]]; then
+            FULL_VERSION="${{ steps.source.outputs.version }}"
+          else
+            FULL_VERSION=$(make kernelrelease)
+          fi
+          echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
+          echo "Final kernel version: $FULL_VERSION"
+
+      - name: Compile kernel
+        working-directory: ./linux-source
+        run: |
+          make -j$(nproc) bindeb-pkg
+
+      - name: Collect artifacts
+        run: |
+          version="${{ steps.final_version.outputs.version }}"
+          shopt -s nullglob
+          debs=(linux-*-${version}_*.deb)
+          if [[ ${#debs[@]} -eq 0 ]]; then
+            echo "No .deb files matching version $version found. Build may have failed."
+            exit 1
+          fi
+          mkdir debs
+          mv "${debs[@]}" debs/
+          tar -czf kernel-${version}.tar.gz -C debs .
+          tar -czf config-${version}.tar.gz final.config
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag_prefix }}${{ steps.final_version.outputs.version }}
+          name: ${{ inputs.release_name_prefix }} ${{ steps.final_version.outputs.version }}
+          body: |
+            Built from ${{ inputs.kernel_repo == 'stable' && 'kernel.org' || inputs.kernel_repo }}
+            ${{ inputs.kernel_repo != 'stable' && inputs.kernel_ref != '' && format('(ref: {0})', inputs.kernel_ref) || '' }}
+            Configuration: `${{ inputs.config_file }}` from this repo.
+          files: |
+            kernel-${{ steps.final_version.outputs.version }}.tar.gz
+            config-${{ steps.final_version.outputs.version }}.tar.gz
+          allow_override: true
