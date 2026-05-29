@@ -1,0 +1,16 @@
+name: Build Latest Stable Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  call-build:
+    uses: ./.github/workflows/build-kernel.yml
+    with:
+      kernel_repo: 'stable'               # 特殊标记，从 kernel.org 获取最新稳定版
+      kernel_ref: ''                      # 未使用，保留为空
+      config_file: 'config'
+      release_tag_prefix: 'v'
+      release_name_prefix: 'Linux Kernel'
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
