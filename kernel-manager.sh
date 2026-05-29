@@ -24,11 +24,22 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# ==================== 辅助函数 ====================
-info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+# ==================== 辅助函数（所有输出重定向到 stderr） ====================
+info()    { echo -e "${GREEN}[INFO]${NC} $1" >&2; }
+warn()    { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 error()   { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
-ask()     { echo -en "${BLUE}[?]${NC} $1 "; }
+ask()     { echo -en "${BLUE}[?]${NC} $1 " >&2; }
+
+# 通用：更新 GRUB（兼容 update-grub / update-grub2）
+update_grub() {
+    if command -v update-grub &>/dev/null; then
+        update-grub
+    elif command -v update-grub2 &>/dev/null; then
+        update-grub2
+    else
+        warn "未找到 update-grub/update-grub2，请手动更新引导配置"
+    fi
+}
 
 # 清理旧的下载缓存
 cleanup_downloads() {
@@ -73,11 +84,11 @@ gh_api() {
     curl -sSL "${auth_header[@]}" -H "Accept: application/vnd.github.v3+json" "$url"
 }
 
-# 获取所有发布版本（宽松匹配 kernel-*.tar.gz）
+# 获取所有发布版本（宽松匹配 kernel-*.tar.gz），增加容错
 get_releases() {
     gh_api "releases" | jq -r '
         .[].assets[] | select(.name | test("^kernel-[A-Za-z0-9._-]+\\.tar\\.gz$")) | .name | sub("kernel-"; "") | sub("\\.tar\\.gz$"; "")
-    ' | sort -V | uniq
+    ' 2>/dev/null | sort -V | uniq || true
 }
 
 # 根据版本号获取下载 URL
@@ -85,10 +96,10 @@ get_download_url() {
     local version="$1"
     gh_api "releases" | jq -r --arg ver "$version" '
         .[].assets[] | select(.name == "kernel-\($ver).tar.gz") | .browser_download_url
-    ' | head -1
+    ' 2>/dev/null | head -1 || true
 }
 
-# 下载并解压内核包
+# 下载并解压内核包（仅输出解压路径到 stdout）
 download_kernel() {
     local version="$1"
     local url=$(get_download_url "$version")
@@ -101,7 +112,10 @@ download_kernel() {
     local extract_dir="${DOWNLOAD_DIR}/kernel-${version}"
 
     info "下载: $url"
-    curl -# -L -o "$archive" "$url" || error "下载失败"
+    if ! curl -# -L -o "$archive" "$url"; then
+        rm -f "$archive"
+        error "下载失败"
+    fi
     
     info "解压到: $extract_dir"
     rm -rf "$extract_dir"
@@ -116,13 +130,17 @@ download_kernel() {
 install_kernel() {
     local dir="$1"
     local version="$2"
-    local deb_files=($(find "$dir" -maxdepth 1 -name "linux-*.deb" 2>/dev/null || true))
+    local deb_files=()
+    while IFS= read -r -d '' file; do
+        deb_files+=("$file")
+    done < <(find "$dir" -maxdepth 1 -type f -name "*.deb" -print0 2>/dev/null)
+    
     if [[ ${#deb_files[@]} -eq 0 ]]; then
         error "在 $dir 中未找到 .deb 文件"
     fi
 
-    # 检查是否已安装相同版本
-    local installed=$(dpkg -l | awk -v ver="$version" '$2 == "linux-image-" ver || $2 ~ "^linux-image-" ver "-" {print $2}' | head -1)
+    # 检查是否已安装相同版本（使用包名中的版本字符串）
+    local installed=$(dpkg -l | awk -v ver="$version" '$2 ~ "^linux-image-" ver "[+-]" || $2 == "linux-image-" ver {print $2}' | head -1 || true)
     if [[ -n "$installed" ]]; then
         warn "内核版本 $version 已安装 ($installed)"
         ask "是否重新安装? (y/N) "
@@ -136,26 +154,30 @@ install_kernel() {
     info "安装以下 deb 包:"
     printf '  %s\n' "${deb_files[@]}"
     
-    # 使用 apt-get install 自动处理依赖，支持本地 .deb 文件路径
     if ! apt-get install -y "${deb_files[@]}"; then
         error "安装失败，请检查依赖或手动执行: apt-get install -f"
     fi
     
     info "更新 GRUB 配置..."
-    update-grub
+    update_grub
     info "安装完成！可使用 '$0 switch $version' 切换至此内核（重启后生效）。"
 }
 
-# 列出已安装的自定义内核（所有 linux-image-* 包，排除通用内核名）
+# 列出已安装的自定义内核
 list_installed() {
     dpkg -l | awk '/^ii  linux-image-/ {print $2}' | sed 's/linux-image-//' | sort -V
 }
 
-# 卸载内核
+# 卸载内核（支持 -y 选项自动确认）
 uninstall_kernel() {
+    local force=false
+    if [[ "$1" == "-y" ]]; then
+        force=true
+        shift
+    fi
     local version="$1"
-    local current_pkg=$(dpkg -l | awk -v kernel="$(uname -r)" '$2 == "linux-image-" kernel {print $2}' | head -1)
-    local target_pkg=$(dpkg -l | awk -v ver="$version" '$2 == "linux-image-" ver || $2 ~ "^linux-image-" ver "-" {print $2}' | head -1)
+    local current_pkg=$(dpkg -l | awk -v kernel="$(uname -r)" '$2 == "linux-image-" kernel {print $2}' | head -1 || true)
+    local target_pkg=$(dpkg -l | awk -v ver="$version" '$2 ~ "^linux-image-" ver "[+-]" || $2 == "linux-image-" ver {print $2}' | head -1 || true)
     
     if [[ -z "$target_pkg" ]]; then
         error "未找到已安装的内核版本 ${version}\n已安装内核:\n$(list_installed | sed 's/^/  /')"
@@ -165,57 +187,55 @@ uninstall_kernel() {
         error "不能卸载当前正在运行的内核 ($target_pkg)，请重启使用其他内核后再卸载"
     fi
 
-    # 精确匹配 headers 包（假设包名为 linux-headers-<version>）
-    local headers_pkg=""
-    if dpkg -l "linux-headers-${version}" &>/dev/null; then
-        headers_pkg="linux-headers-${version}"
-    elif dpkg -l "linux-headers-${version}-generic" &>/dev/null; then
-        headers_pkg="linux-headers-${version}-generic"
-    fi
+    # 改进的 headers 包匹配（支持多种变体）
+    local headers_pkg=$(dpkg -l | awk -v ver="$version" '
+        $2 ~ "^linux-headers-" ver && $1=="ii" {print $2; exit}
+    ' || true)
 
     echo -e "${YELLOW}将要卸载:${NC} $target_pkg"
     [[ -n "$headers_pkg" ]] && echo "          $headers_pkg"
-    ask "确认卸载? (y/N) "
-    read -r answer
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-        dpkg --purge "$target_pkg"
-        [[ -n "$headers_pkg" ]] && dpkg --purge "$headers_pkg"
-        info "卸载完成，更新 GRUB..."
-        update-grub
-    else
-        info "已取消"
+    
+    if [[ "$force" != true ]]; then
+        ask "确认卸载? (y/N) "
+        read -r answer
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+            info "已取消"
+            return
+        fi
     fi
+
+    dpkg --purge "$target_pkg"
+    [[ -n "$headers_pkg" ]] && dpkg --purge "$headers_pkg"
+    info "卸载完成，更新 GRUB..."
+    update_grub
 }
 
-# 切换内核（下次启动）
+# 切换内核（下次启动）- 使用包含匹配，不再依赖正则转义
 switch_kernel() {
     local version="$1"
-    # 转义版本号中的点，避免正则误匹配
-    local escaped_version=$(printf '%s\n' "$version" | sed 's/\./\\./g')
     local entries=()
     
-    # 提取菜单项标题，兼容单引号和双引号
+    # 收集所有菜单项标题中包含指定版本字符串的项
     while IFS= read -r line; do
-        # 匹配包含版本号的菜单项（版本号前后有空格、短横线或结尾）
         if [[ "$line" =~ menuentry\ [\"\']([^\"\']+)[\"\'] ]]; then
             local title="${BASH_REMATCH[1]}"
-            if [[ "$title" =~ $escaped_version ]]; then
+            if [[ "$title" == *"$version"* ]]; then
                 entries+=("$title")
             fi
         fi
     done < <(grep -E "^menuentry" /boot/grub/grub.cfg)
 
     if [[ ${#entries[@]} -eq 0 ]]; then
-        error "未在 GRUB 中找到版本 ${version} 的启动项"
+        error "未在 GRUB 中找到包含版本 ${version} 的启动项"
     fi
 
     local selected
     if [[ ${#entries[@]} -eq 1 ]]; then
         selected="${entries[0]}"
     else
-        echo "找到多个匹配项，请选择:"
+        echo "找到多个匹配项，请选择:" >&2
         for i in "${!entries[@]}"; do
-            echo "  $((i+1))) ${entries[$i]}"
+            echo "  $((i+1))) ${entries[$i]}" >&2
         done
         read -p "请输入编号 (1-${#entries[@]}): " choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#entries[@]} )); then
@@ -230,7 +250,7 @@ switch_kernel() {
         error "grub-reboot 命令未找到，请安装 grub2-common (Ubuntu) 或相应包"
     fi
     grub-reboot "$selected"
-    echo -e "${YELLOW}提示: 重启后将自动使用该内核。若要永久更改，请修改 /etc/default/grub 中的 GRUB_DEFAULT。${NC}"
+    echo -e "${YELLOW}提示: 重启后将自动使用该内核。若要永久更改，请修改 /etc/default/grub 中的 GRUB_DEFAULT。${NC}" >&2
 }
 
 # 显示当前内核
@@ -238,9 +258,9 @@ current_kernel() {
     local cur=$(uname -r)
     info "当前运行的内核: $cur"
     if dpkg -l | grep -q "linux-image-${cur}"; then
-        echo "   (已通过 dpkg 安装)"
+        echo "   (已通过 dpkg 安装)" >&2
     else
-        echo "   (可能是系统自带或手动编译)"
+        echo "   (可能是系统自带或手动编译)" >&2
     fi
 }
 
@@ -253,7 +273,7 @@ show_help() {
     $0 list                     列出仓库中可用的内核版本
     $0 download <version>       仅下载指定版本 (不安装)
     $0 install <version>        下载并安装
-    $0 uninstall <version>      卸载已安装的内核版本
+    $0 uninstall [-y] <version> 卸载已安装的内核版本（-y 跳过确认）
     $0 switch <version>         设置下次启动时使用该内核
     $0 current                  显示当前运行的内核
     $0 clean-downloads          清理旧的下载缓存 (保留最近 ${KEEP_DOWNLOADS} 个)
@@ -268,6 +288,7 @@ show_help() {
     export GITHUB_REPO="myuser/mykernel"
     $0 list
     $0 install 6.6.3-bbr
+    $0 uninstall -y 6.6.3-bbr
     $0 switch 6.6.3-bbr
 EOF
 }
@@ -280,7 +301,7 @@ main() {
     fi
 
     # 检查必要命令
-    for cmd in curl jq dpkg apt-get update-grub grub-reboot; do
+    for cmd in curl jq dpkg apt-get update-grub; do
         if ! command -v "$cmd" &>/dev/null; then
             error "缺少依赖命令: $cmd (请安装: apt install $cmd)"
         fi
@@ -303,7 +324,12 @@ main() {
             ;;
         uninstall)
             [[ -z "${2:-}" ]] && error "请指定版本号"
-            uninstall_kernel "$2"
+            if [[ "$2" == "-y" ]]; then
+                [[ -z "${3:-}" ]] && error "请指定版本号"
+                uninstall_kernel -y "$3"
+            else
+                uninstall_kernel "$2"
+            fi
             ;;
         switch)
             [[ -z "${2:-}" ]] && error "请指定版本号"
