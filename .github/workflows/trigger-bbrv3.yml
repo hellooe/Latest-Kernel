@@ -2,7 +2,10 @@ name: Build BBRv3 Kernel
 
 on:
   workflow_dispatch:
-
+  
+permissions:
+  contents: write
+  
 jobs:
   call-build:
     uses: ./.github/workflows/build-kernel.yml
