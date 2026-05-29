@@ -47,8 +47,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential libncurses-dev bison flex libssl-dev \
-            libelf-dev dwarves bc rsync debhelper git jq
+            build-essential libncurses-dev libncursesw5-dev \
+            bison flex libssl-dev libelf-dev \
+            dwarves bc rsync debhelper git jq libdw-dev \
+            openssl pahole fakeroot devscripts kmod cpio \
+            dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
+            gcc-13
+
+      - name: Set GCC 13 as default (optional but recommended for newer kernels)
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
 
       - name: Obtain kernel source
         id: source
