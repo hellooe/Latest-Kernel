@@ -50,13 +50,6 @@ jobs:
             build-essential libncurses-dev bison flex libssl-dev \
             libelf-dev dwarves bc rsync debhelper git jq
 
-      - name: Setup swap (4GB)
-        run: |
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
       - name: Obtain kernel source
         id: source
         run: |
