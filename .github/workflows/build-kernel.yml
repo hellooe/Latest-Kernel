@@ -54,7 +54,7 @@ jobs:
             dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
             gcc-13
 
-      - name: Set GCC 13 as default (optional but recommended for newer kernels)
+      - name: Set GCC 13 as default
         run: |
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
@@ -133,7 +133,7 @@ jobs:
           tar -czf config-${version}.tar.gz final.config
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.release_tag_prefix }}${{ steps.final_version.outputs.version }}
           name: ${{ inputs.release_name_prefix }} ${{ steps.final_version.outputs.version }}
@@ -144,4 +144,4 @@ jobs:
           files: |
             kernel-${{ steps.final_version.outputs.version }}.tar.gz
             config-${{ steps.final_version.outputs.version }}.tar.gz
-          allow_override: true
+          overwrite_files: true
