@@ -39,7 +39,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout repository (for config file)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
