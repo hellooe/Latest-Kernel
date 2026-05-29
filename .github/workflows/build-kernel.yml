@@ -55,7 +55,7 @@ jobs:
         run: |
           if [[ "${{ inputs.kernel_repo }}" == "stable" ]]; then
             RELEASES_JSON=$(curl -s https://www.kernel.org/releases.json)
-            LATEST=$(echo "$RELEASES_JSON" | jq -r '.releases[] | select(.stable == true) | .version' | sort -V | tail -1)
+            LATEST=$(echo "$RELEASES_JSON" | jq -r '.releases[] | select(.moniker == "stable") | .version' | sort -V | tail -1)
             DOWNLOAD_URL=$(echo "$RELEASES_JSON" | jq -r --arg ver "$LATEST" '.releases[] | select(.version == $ver) | .source')
             if [[ -z "$DOWNLOAD_URL" ]]; then
               echo "ERROR: Could not find download URL for version $LATEST"
