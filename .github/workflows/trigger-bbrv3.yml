@@ -1,0 +1,16 @@
+name: Build BBRv3 Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  call-build:
+    uses: ./.github/workflows/build-kernel.yml
+    with:
+      kernel_repo: 'https://github.com/google/bbr.git'
+      kernel_ref: 'v3'
+      config_file: 'config'
+      release_tag_prefix: 'bbrv3-'
+      release_name_prefix: 'BBRv3 Kernel'
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
