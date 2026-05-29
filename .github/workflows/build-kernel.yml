@@ -54,9 +54,14 @@ jobs:
         id: source
         run: |
           if [[ "${{ inputs.kernel_repo }}" == "stable" ]]; then
-            LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.stable == true) | .version' | sort -V | tail -1)
-            MAJOR=$(echo "$LATEST" | cut -d. -f1)
-            wget https://cdn.kernel.org/pub/linux/kernel/v$MAJOR.x/linux-$LATEST.tar.xz
+            RELEASES_JSON=$(curl -s https://www.kernel.org/releases.json)
+            LATEST=$(echo "$RELEASES_JSON" | jq -r '.releases[] | select(.stable == true) | .version' | sort -V | tail -1)
+            DOWNLOAD_URL=$(echo "$RELEASES_JSON" | jq -r --arg ver "$LATEST" '.releases[] | select(.version == $ver) | .source')
+            if [[ -z "$DOWNLOAD_URL" ]]; then
+              echo "ERROR: Could not find download URL for version $LATEST"
+              exit 1
+            fi
+            wget "$DOWNLOAD_URL"
             tar -xf linux-$LATEST.tar.xz
             mv linux-$LATEST linux-source
             echo "version=$LATEST" >> $GITHUB_OUTPUT
