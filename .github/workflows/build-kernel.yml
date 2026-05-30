@@ -50,7 +50,7 @@ jobs:
             build-essential libncurses-dev libssl-dev libelf-dev \
             bison flex bc rsync debhelper dpkg-dev \
             fakeroot kmod cpio dwarves \
-            lz4 zstd xz-utils curl jq \
+            lz4 zstd xz-utils git jq \
             libdw-dev gcc-13
 
       - name: Set GCC 13 as default
