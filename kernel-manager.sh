@@ -47,36 +47,33 @@ update_grub() {
     fi
 }
 
-# 清理旧的下载缓存（按目录修改时间保留最近 KEEP_DOWNLOADS 个）
-# 同时删除对应的 .tar.gz 文件
+# 清理旧的下载缓存（保留最近 KEEP_DOWNLOADS 个版本目录及对应 tar.gz）
 cleanup_downloads() {
     if [[ -d "$DOWNLOAD_DIR" ]]; then
         (
             shopt -s nullglob
             cd "$DOWNLOAD_DIR"
-            # 列出所有 kernel-* 目录，按修改时间排序（最新的在前）
-            dirs=(kernel-*)
+            # 收集所有 kernel-* 目录，按修改时间排序（最旧的在前）
+            local dirs=(kernel-*)
             if [[ ${#dirs[@]} -gt $KEEP_DOWNLOADS ]]; then
                 local to_delete=$(( ${#dirs[@]} - KEEP_DOWNLOADS ))
-                # 按修改时间升序排序（最旧的在前），删除前 to_delete 个
+                # 使用 find + stat 排序，避免 xargs 空格问题
                 local del_dirs
-                del_dirs=$(printf '%s\n' "${dirs[@]}" | xargs -r stat -c "%Y %n" | sort -n | head -n "$to_delete" | cut -d' ' -f2-)
-                for d in $del_dirs; do
-                    # 删除目录
+                del_dirs=$(find . -maxdepth 1 -type d -name "kernel-*" -printf "%T@ %f\n" | sort -n | head -n "$to_delete" | cut -d' ' -f2-)
+                while IFS= read -r d; do
+                    [[ -z "$d" ]] && continue
                     rm -rf "$d"
-                    # 删除对应的 .tar.gz 文件
                     local ver="${d#kernel-}"
                     if [[ -f "kernel-${ver}.tar.gz" ]]; then
                         rm -f "kernel-${ver}.tar.gz"
                     fi
-                done
+                done <<< "$del_dirs"
             fi
         )
     fi
 }
 
 # GitHub API 请求（支持私有仓库 token，并添加缓存机制）
-# 返回完整的 HTTP 响应体，失败时输出空并打印错误到 stderr
 gh_api() {
     local endpoint="$1"
     local url="${GH_API}/${GITHUB_REPO}/${endpoint}"
@@ -88,7 +85,7 @@ gh_api() {
     local response_file
     response_file=$(mktemp)
     local http_code
-    http_code=$(curl -sSL -w "%{http_code}" -o "$response_file" "${auth_header[@]}" -H "Accept: application/vnd.github.v3+json" "$url")
+    http_code=$(curl -sSL --connect-timeout 10 --max-time 30 -w "%{http_code}" -o "$response_file" "${auth_header[@]}" -H "Accept: application/vnd.github.v3+json" "$url")
     if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
         local err_msg
         err_msg=$(cat "$response_file" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "HTTP $http_code")
@@ -121,10 +118,9 @@ _get_releases_cached() {
         fi
         error "无法获取版本列表，请检查网络或 GitHub Token"
     fi
-    # 放宽版本名正则：匹配 kernel-xxxx.tar.gz
     local versions
     versions=$(echo "$releases_json" | jq -r '
-        .[].assets[] | select(.name | test("^kernel-.+\\.tar\\.gz$")) | .name | sub("kernel-"; "") | sub("\\.tar\\.gz$"; "")
+        .[].assets[] | select(.name | test("^kernel-.+\\.tar\\.gz$")) | .name | sub("kernel-"; "") | sub("\\.tar\gz$"; "")
     ' 2>/dev/null | sort -V | uniq)
     if [[ -n "$versions" ]]; then
         echo "$versions" > "$cache_file"
@@ -136,10 +132,9 @@ _get_releases_cached() {
 }
 get_releases() { _get_releases_cached; }
 
-# 根据版本号获取下载 URL（利用缓存数据直接查找，避免额外 API 调用）
+# 根据版本号获取下载 URL
 get_download_url() {
     local version="$1"
-    # 直接从 GitHub API 获取所有 releases 数据（利用缓存机制）
     local releases_json
     releases_json=$(gh_api "releases")
     if [[ -z "$releases_json" ]]; then
@@ -177,7 +172,7 @@ download_kernel() {
 
     if [[ ! -f "$archive" ]]; then
         info "下载: $url"
-        if ! curl -# -L -o "$archive" "$url"; then
+        if ! curl -# -L --connect-timeout 10 --max-time 300 -o "$archive" "$url"; then
             rm -f "$archive"
             error "下载失败"
         fi
@@ -199,13 +194,58 @@ download_kernel() {
     echo "$extract_dir"
 }
 
+# 检测虚拟化环境并返回需要的模块列表
+detect_required_modules() {
+    local modules=()
+    # 方法1: systemd-detect-virt
+    if command -v systemd-detect-virt &>/dev/null; then
+        local virt
+        virt=$(systemd-detect-virt)
+        case "$virt" in
+            kvm|qemu)
+                modules=(virtio_blk virtio_net virtio_scsi)
+                ;;
+            vmware)
+                modules=(vmw_pvscsi vmxnet3)
+                ;;
+            xen)
+                modules=(xen_blkfront xen_netfront)
+                ;;
+            microsoft)
+                modules=(hv_storvsc hv_netvsc)
+                ;;
+        esac
+    fi
+    # 方法2: 通过 DMI 信息（如果上面的方法没有结果）
+    if [[ ${#modules[@]} -eq 0 ]] && [[ -d /sys/devices/virtual/dmi/id ]]; then
+        local product_name
+        product_name=$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null || echo "")
+        if [[ "$product_name" =~ KVM|QEMU ]]; then
+            modules=(virtio_blk virtio_net virtio_scsi)
+        elif [[ "$product_name" =~ VMware ]]; then
+            modules=(vmw_pvscsi vmxnet3)
+        elif [[ "$product_name" =~ Xen ]]; then
+            modules=(xen_blkfront xen_netfront)
+        fi
+    fi
+    # 方法3: 通过根设备名称补充判断
+    local rootdev
+    rootdev=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/[0-9]*$//')
+    if [[ "$rootdev" == "/dev/vd"* ]]; then
+        modules+=(virtio_blk virtio_scsi)
+    elif [[ "$rootdev" == "/dev/xvd"* ]]; then
+        modules+=(xen_blkfront)
+    fi
+    # 去重并输出
+    printf '%s\n' "${modules[@]}" | sort -u
+}
+
 # 安装内核（安装 linux-image 和 linux-headers 包）
 install_kernel() {
     local dir="$1"
     local version="$2"
     local deb_files=()
 
-    # 收集所有 .deb 文件
     while IFS= read -r -d '' file; do
         deb_files+=("$file")
     done < <(find "$dir" -maxdepth 1 -type f -name "*.deb" -print0 2>/dev/null)
@@ -214,7 +254,6 @@ install_kernel() {
         error "在 $dir 中未找到任何 .deb 文件"
     fi
 
-    # 分离 image 和 headers
     local image_debs=()
     local headers_debs=()
     for deb in "${deb_files[@]}"; do
@@ -229,7 +268,6 @@ install_kernel() {
         error "未找到 linux-image .deb 文件"
     fi
 
-    # 检查架构兼容性（使用 dpkg-deb 更可靠）
     local sample_deb="${image_debs[0]}"
     local pkg_arch
     pkg_arch=$(dpkg-deb -f "$sample_deb" Architecture)
@@ -239,7 +277,7 @@ install_kernel() {
         error "内核包架构为 $pkg_arch，当前系统为 $sys_arch，无法安装"
     fi
 
-    # 检查是否已安装
+    # 检查是否已安装（使用传入的版本号作为包名后缀）
     local installed_pkg
     installed_pkg=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -Fx "linux-image-${version}" || true)
     local reinstall_flag=""
@@ -254,10 +292,13 @@ install_kernel() {
         reinstall_flag="--reinstall"
     fi
 
-    # 仅当需要安装依赖时才更新包索引（推迟到实际安装失败后）
-    local need_update=true
+    # 确保 initramfs 工具存在
+    if ! command -v update-initramfs &>/dev/null && ! command -v dracut &>/dev/null; then
+        warn "未检测到 initramfs 生成工具，将安装 initramfs-tools"
+        apt-get update
+        apt-get install -y initramfs-tools
+    fi
 
-    # 构建安装参数
     local install_packages=("${image_debs[@]}")
     if [[ ${#headers_debs[@]} -gt 0 ]]; then
         info "同时安装 linux-headers 包"
@@ -267,7 +308,6 @@ install_kernel() {
     info "安装以下 deb 包:"
     printf '  %s\n' "${install_packages[@]}"
 
-    # 尝试安装，如果失败则更新并修复依赖
     local apt_opts=()
     if [[ -n "$reinstall_flag" ]]; then
         apt_opts+=("$reinstall_flag")
@@ -280,43 +320,47 @@ install_kernel() {
         apt-get install -y "${apt_opts[@]}" "${install_packages[@]}" || error "安装失败，请手动检查"
     fi
 
+    # 获取实际内核版本（用于 initramfs 重建）
+    local kernel_version="$version"
+
+    # 重建 initramfs 并添加必要模块
+    info "重建 initramfs 并添加虚拟化驱动..."
+    local required_modules=()
+    mapfile -t required_modules < <(detect_required_modules)
+
+    if [[ ${#required_modules[@]} -gt 0 ]]; then
+        info "检测到虚拟化环境，确保以下模块在 initramfs 中: ${required_modules[*]}"
+        local modules_file="/etc/initramfs-tools/modules"
+        mkdir -p "$(dirname "$modules_file")"
+        if [[ ! -f "$modules_file" ]]; then
+            touch "$modules_file"
+        else
+            cp "$modules_file" "${modules_file}.bak.$(date +%s)"
+        fi
+        for mod in "${required_modules[@]}"; do
+            if ! grep -qxF "$mod" "$modules_file" 2>/dev/null; then
+                echo "$mod" >> "$modules_file"
+                info "已添加 $mod 到 $modules_file"
+            fi
+        done
+    fi
+
+    if command -v update-initramfs &>/dev/null; then
+        if ! update-initramfs -u -k "$kernel_version"; then
+            warn "update-initramfs 失败，请手动检查 /boot 空间及内核版本"
+        fi
+    elif command -v dracut &>/dev/null; then
+        if ! dracut --force --kver "$kernel_version"; then
+            warn "dracut 失败，请手动检查"
+        fi
+    else
+        warn "未找到 initramfs 工具，系统可能无法启动"
+    fi
+
     info "更新 GRUB 配置..."
     update_grub
 
-    # 询问是否设置为下次启动的内核
-    ask "是否将此内核设置为下次启动的默认项? (y/N) "
-    read -r set_default
-    if [[ "$set_default" =~ ^[Yy]$ ]]; then
-        local menu_index
-        menu_index=$(get_grub_index_for_version "$version")
-        if [[ -n "$menu_index" ]]; then
-            grub-reboot "$menu_index"
-            info "已设置下次启动使用内核 $version (菜单项 #$menu_index)"
-            echo -e "${YELLOW}提示：重启后将自动使用该内核。若要永久更改，请修改 /etc/default/grub 中的 GRUB_DEFAULT。${NC}" >&2
-        else
-            warn "无法自动定位内核 $version 的 GRUB 菜单项，请手动运行 '$0 switch' 设置"
-        fi
-    fi
-
     info "安装完成！"
-}
-
-# 根据内核版本获取 GRUB 菜单编号（从 0 开始）
-get_grub_index_for_version() {
-    local version="$1"
-    local idx=0
-    # 解析 grub.cfg，匹配 menuentry 中包含该版本号的项（通过 linux 行中的 vmlinuz 路径）
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^menuentry[[:space:]]+\'([^\']+)\' ]]; then
-            local title="${BASH_REMATCH[1]}"
-            if [[ "$title" =~ $version ]]; then
-                echo "$idx"
-                return
-            fi
-            ((idx++))
-        fi
-    done < /boot/grub/grub.cfg
-    echo ""
 }
 
 # 列出已安装的自定义内核
@@ -365,7 +409,7 @@ uninstall_kernel() {
         fi
     fi
 
-    dpkg --purge "$target_pkg"
+    dpkg --purge "$target_pkg" || warn "卸载 $target_pkg 失败"
     for pkg in "${related_packages[@]}"; do
         if [[ "$pkg" != "$target_pkg" ]]; then
             dpkg --purge "$pkg" 2>/dev/null || warn "无法卸载 $pkg (可能已不存在)"
@@ -384,7 +428,6 @@ switch_kernel() {
     local titles=()
     local indices=()
 
-    # 提取所有 GRUB 菜单项及其编号（从 0 开始）
     local idx=0
     while IFS= read -r line; do
         if [[ "$line" =~ ^menuentry[[:space:]]+\'([^\']+)\' ]]; then
