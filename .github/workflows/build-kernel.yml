@@ -110,7 +110,8 @@ jobs:
       - name: Compile kernel
         working-directory: ./linux-source
         run: |
-          make -j$(nproc) bindeb-pkg KDEB_COMPRESS=gzip KDEB_SKIPDEBUG=1
+          make -j$(nproc) V=1
+          make bindeb-pkg KDEB_COMPRESS=gzip KDEB_SKIPDEBUG=1
 
       - name: Collect artifacts
         run: |
