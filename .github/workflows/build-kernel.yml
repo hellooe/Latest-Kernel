@@ -51,7 +51,7 @@ jobs:
             bison flex bc rsync debhelper dpkg-dev \
             fakeroot kmod cpio dwarves \
             lz4 zstd xz-utils curl jq \
-            git gcc-13
+            libdw-dev gcc-13
 
       - name: Set GCC 13 as default
         run: |
@@ -110,7 +110,7 @@ jobs:
       - name: Compile kernel
         working-directory: ./linux-source
         run: |
-          make -j$(nproc) bindeb-pkg KDEB_COMPRESS=gzip skipdbg=true
+          make -j$(nproc) bindeb-pkg KDEB_COMPRESS=gzip KDEB_SKIPDEBUG=1
 
       - name: Collect artifacts
         run: |
