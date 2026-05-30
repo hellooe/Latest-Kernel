@@ -19,9 +19,9 @@
 在目标 Ubuntu/Debian 主机上（root 用户）：
 
 ```bash
-chmod +x kernel-manager.sh
+curl -O https://raw.githubusercontent.com/hellooe/Latest-Kernel/main/kernel-manager.sh && chmod +x kernel-manager.sh
 
-# 设置仓库（自动检测或手动指定）
+# 设置仓库（默认或手动指定）
 export GITHUB_REPO="你的用户名/仓库名"
 
 # 列出可用版本
@@ -31,7 +31,7 @@ export GITHUB_REPO="你的用户名/仓库名"
 ./kernel-manager.sh install 6.6.0-bbrv3
 
 # 下次启动切换到此内核
-./kernel-manager.sh switch 6.6.0-bbrv3
+./kernel-manager.sh switch
 
 # 重启
 reboot
@@ -44,9 +44,7 @@ reboot
 | `list` | 查看可下载的内核版本 |
 | `install <版本>` | 下载并安装内核 |
 | `uninstall <版本>` | 卸载已安装内核 |
-| `switch <版本>` | 下次启动使用该内核 |
-| `current` | 显示当前内核 |
-| `clean-downloads` | 清理旧缓存 |
+| `switch` | 下次启动使用该内核 |
 
 ## 环境变量
 
