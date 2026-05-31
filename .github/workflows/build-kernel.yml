@@ -92,6 +92,8 @@ jobs:
             exit 1
           fi
           cp "$CONFIG_PATH" .config
+          scripts/config --disable SYSTEM_TRUSTED_KEYS
+          scripts/config --disable SYSTEM_REVOCATION_KEYS
           make olddefconfig
           cp .config ../final.config
 
