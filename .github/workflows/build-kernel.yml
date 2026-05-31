@@ -113,19 +113,18 @@ jobs:
         working-directory: ./linux-source
         run: |
           make -j$(nproc)
-          make bindeb-pkg KDEB_COMPRESS=gzip KDEB_SKIPDEBUG=1
+          make bindeb-pkg
 
       - name: Collect artifacts
         run: |
           version="${{ steps.final_version.outputs.version }}"
-          shopt -s nullglob
-          debs=(linux-*.deb)
-          if [[ ${#debs[@]} -eq 0 ]]; then
-            echo "No .deb files matching version $version found. Build may have failed."
+          mkdir -p debs
+          find . -maxdepth 1 -type f -name 'linux-image-*.deb' ! -name '*dbg*' -exec mv {} debs/ \;
+          find . -maxdepth 1 -type f -name 'linux-headers-*.deb' -exec mv {} debs/ \;
+          if [[ -z $(ls debs/linux-image-*.deb 2>/dev/null) ]]; then
+            echo "ERROR: Missing required .deb files"
             exit 1
           fi
-          mkdir debs
-          mv "${debs[@]}" debs/
           tar -czf kernel-${version}.tar.gz -C debs .
           tar -czf config-${version}.tar.gz final.config
 
