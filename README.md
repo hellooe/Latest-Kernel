@@ -28,13 +28,7 @@ export GITHUB_REPO="你的用户名/仓库名"
 ./kernel-manager.sh list
 
 # 安装指定版本
-./kernel-manager.sh install 6.6.0-bbrv3
-
-# 下次启动切换到此内核
-./kernel-manager.sh switch
-
-# 重启
-reboot
+./kernel-manager.sh install 7.0.10
 ```
 
 ## 命令一览
@@ -44,7 +38,7 @@ reboot
 | `list` | 查看可下载的内核版本 |
 | `install <版本>` | 下载并安装内核 |
 | `uninstall <版本>` | 卸载已安装内核 |
-| `switch` | 下次启动使用该内核 |
+| `clean` | 清理缓存文件 |
 
 ## 环境变量
 
