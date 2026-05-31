@@ -36,7 +36,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 300
     steps:
       - name: Checkout repository (for config file)
         uses: actions/checkout@v5
@@ -50,18 +50,16 @@ jobs:
             build-essential libncurses-dev libssl-dev libelf-dev \
             bison flex bc rsync debhelper dpkg-dev \
             fakeroot kmod cpio dwarves \
-            lz4 zstd xz-utils git jq \
-            libdw-dev gcc-13
-
-      - name: Set GCC 13 as default
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
+            lz4 zstd xz-utils libdw-dev jq \
+            git gcc-13
 
       - name: Obtain kernel source
         id: source
+        env:
+          KERNEL_REPO: ${{ inputs.kernel_repo }}
+          KERNEL_REF: ${{ inputs.kernel_ref }}
         run: |
-          if [[ "${{ inputs.kernel_repo }}" == "stable" ]]; then
+          if [[ "$KERNEL_REPO" == "stable" ]]; then
             RELEASES_JSON=$(curl -s https://www.kernel.org/releases.json)
             LATEST=$(echo "$RELEASES_JSON" | jq -r '.releases[] | select(.moniker == "stable") | .version' | sort -V | tail -1)
             DOWNLOAD_URL=$(echo "$RELEASES_JSON" | jq -r --arg ver "$LATEST" '.releases[] | select(.version == $ver) | .source')
@@ -75,18 +73,20 @@ jobs:
             echo "version=$LATEST" >> $GITHUB_OUTPUT
             echo "source_type=stable" >> $GITHUB_OUTPUT
           else
-            if [[ -n "${{ inputs.kernel_ref }}" ]]; then
-              git clone --depth 1 --branch "${{ inputs.kernel_ref }}" "${{ inputs.kernel_repo }}" linux-source
+            if [[ -n "$KERNEL_REF" ]]; then
+              git clone --depth 1 --branch "$KERNEL_REF" "$KERNEL_REPO" linux-source
             else
-              git clone --depth 1 "${{ inputs.kernel_repo }}" linux-source
+              git clone --depth 1 "$KERNEL_REPO" linux-source
             fi
             echo "source_type=git" >> $GITHUB_OUTPUT
           fi
 
       - name: Configure kernel
         working-directory: ./linux-source
+        env:
+          CONFIG_FILE: ${{ inputs.config_file }}
         run: |
-          CONFIG_PATH="../${{ inputs.config_file }}"
+          CONFIG_PATH="../$CONFIG_FILE"
           if [[ ! -f "$CONFIG_PATH" ]]; then
             echo "ERROR: Config file not found: $CONFIG_PATH"
             exit 1
@@ -110,7 +110,7 @@ jobs:
       - name: Compile kernel
         working-directory: ./linux-source
         run: |
-          make -j$(nproc) V=1
+          make -j$(nproc)
           make bindeb-pkg KDEB_COMPRESS=gzip KDEB_SKIPDEBUG=1
 
       - name: Collect artifacts
