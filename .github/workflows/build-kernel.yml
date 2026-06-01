@@ -42,7 +42,11 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
-
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+          sudo rm -rf /usr/share/swift /usr/local/.ghcup /usr/share/az_*
+          docker rmi $(docker images -q) || true
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -104,9 +108,10 @@ jobs:
 
       - name: Compile kernel
         working-directory: ./linux-source
+        env:
+          CC: gcc-13
         run: |
-          make -j$(nproc)
-          make bindeb-pkg
+          make -j$(nproc) bindeb-pkg
 
       - name: Collect artifacts
         run: |
