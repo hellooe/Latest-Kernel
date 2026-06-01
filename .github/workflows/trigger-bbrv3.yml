@@ -10,7 +10,7 @@ jobs:
   call-build:
     uses: ./.github/workflows/build-kernel.yml
     with:
-      kernel_version: '6.17'
+      kernel_version: '6.12'
       apply_bbr3_patch: true
       config_file: 'config'
       release_tag_prefix: 'bbrv3-'
