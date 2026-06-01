@@ -3,15 +3,15 @@ name: Reusable Kernel Build
 on:
   workflow_call:
     inputs:
-      kernel_repo:
-        description: 'Kernel source repository URL or "stable" for latest stable from kernel.org'
+      kernel_version:
+        description: 'Kernel version (e.g., "6.17", "7.0") – will use linux-${version}.y branch'
         required: true
         type: string
-      kernel_ref:
-        description: 'Branch/tag/commit to checkout (ignored if kernel_repo is "stable")'
+      apply_bbr3_patch:
+        description: 'Whether to apply BBRv3 patch from CachyOS'
         required: false
-        default: ''
-        type: string
+        type: boolean
+        default: false
       config_file:
         description: 'Path to .config file in repo (e.g., "config")'
         required: false
@@ -54,32 +54,30 @@ jobs:
             git gcc-13
 
       - name: Obtain kernel source
-        id: source
         env:
-          KERNEL_REPO: ${{ inputs.kernel_repo }}
-          KERNEL_REF: ${{ inputs.kernel_ref }}
+          VERSION: ${{ inputs.kernel_version }}
         run: |
-          if [[ "$KERNEL_REPO" == "stable" ]]; then
-            RELEASES_JSON=$(curl -s https://www.kernel.org/releases.json)
-            LATEST=$(echo "$RELEASES_JSON" | jq -r '.releases[] | select(.moniker == "stable") | .version' | sort -V | tail -1)
-            DOWNLOAD_URL=$(echo "$RELEASES_JSON" | jq -r --arg ver "$LATEST" '.releases[] | select(.version == $ver) | .source')
-            if [[ -z "$DOWNLOAD_URL" ]]; then
-              echo "ERROR: Could not find download URL for version $LATEST"
-              exit 1
-            fi
-            wget "$DOWNLOAD_URL"
-            tar -xf linux-$LATEST.tar.xz
-            mv linux-$LATEST linux-source
-            echo "version=$LATEST" >> $GITHUB_OUTPUT
-            echo "source_type=stable" >> $GITHUB_OUTPUT
-          else
-            if [[ -n "$KERNEL_REF" ]]; then
-              git clone --depth 1 --branch "$KERNEL_REF" "$KERNEL_REPO" linux-source
-            else
-              git clone --depth 1 "$KERNEL_REPO" linux-source
-            fi
-            echo "source_type=git" >> $GITHUB_OUTPUT
+          BRANCH="linux-${VERSION}.y"
+          echo "Cloning branch $BRANCH from stable kernel tree..."
+          git clone --depth 1 --branch "$BRANCH" \
+            git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source
+
+      - name: Apply BBRv3 patch (if requested)
+        if: ${{ inputs.apply_bbr3_patch == true }}
+        working-directory: ./linux-source
+        env:
+          VERSION: ${{ inputs.kernel_version }}
+        run: |
+          PATCH_URL="https://raw.githubusercontent.com/CachyOS/kernel-patches/refs/heads/master/${VERSION}/0002-bbr3.patch"
+          echo "Downloading BBRv3 patch from $PATCH_URL"
+          wget -O 0002-bbr3.patch "$PATCH_URL"
+          git config user.email "builder@localhost"
+          git config user.name "Kernel Builder"
+          if ! git am 0002-bbr3.patch; then
+            echo "ERROR: Failed to apply BBRv3 patch"
+            exit 1
           fi
+          echo "BBRv3 patch applied successfully"
 
       - name: Configure kernel
         working-directory: ./linux-source
@@ -95,17 +93,12 @@ jobs:
           scripts/config --disable SYSTEM_TRUSTED_KEYS
           scripts/config --disable SYSTEM_REVOCATION_KEYS
           make olddefconfig
-          cp .config ../final.config
 
       - name: Get final kernel version
         id: final_version
         working-directory: ./linux-source
         run: |
-          if [[ "${{ steps.source.outputs.source_type }}" == "stable" ]]; then
-            FULL_VERSION="${{ steps.source.outputs.version }}"
-          else
-            FULL_VERSION=$(make kernelrelease)
-          fi
+          FULL_VERSION=$(make kernelrelease)
           echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
           echo "Final kernel version: $FULL_VERSION"
 
@@ -126,7 +119,7 @@ jobs:
             exit 1
           fi
           tar -czf kernel-${version}.tar.gz -C debs .
-          tar -czf config-${version}.tar.gz final.config
+          tar -czf config-${version}.tar.gz -C linux-source .config
 
       - name: Create release
         uses: softprops/action-gh-release@v3
@@ -134,8 +127,8 @@ jobs:
           tag_name: ${{ inputs.release_tag_prefix }}${{ steps.final_version.outputs.version }}
           name: ${{ inputs.release_name_prefix }} ${{ steps.final_version.outputs.version }}
           body: |
-            Built from ${{ inputs.kernel_repo == 'stable' && 'kernel.org' || inputs.kernel_repo }}
-            ${{ inputs.kernel_repo != 'stable' && inputs.kernel_ref != '' && format('(ref: {0})', inputs.kernel_ref) || '' }}
+            Built from Linux stable tree (version ${{ inputs.kernel_version }})
+            ${{ inputs.apply_bbr3_patch == true && 'BBRv3 patch applied (from CachyOS)' || 'No extra patches applied' }}
             Configuration: `${{ inputs.config_file }}` from this repo.
           files: |
             kernel-${{ steps.final_version.outputs.version }}.tar.gz
