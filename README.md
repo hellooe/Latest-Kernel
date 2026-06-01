@@ -1,6 +1,6 @@
 # Linux Kernel Builder & Manager
 
-通过 GitHub Actions 自动构建自定义内核（.deb），并使用管理脚本一键安装/切换。
+通过 GitHub Actions 构建自定义内核（.deb），支持开启 BBRv3 (apply bbr3.patch from CachyOS)，并提供脚本方便安装/卸载内核。
 
 ## 快速开始
 
@@ -29,6 +29,9 @@ export GITHUB_REPO="你的用户名/仓库名"
 
 # 安装指定版本
 ./kernel-manager.sh install 7.0.10
+
+# 安全卸载指定版本
+./kernel-manager.sh uninstall 7.0.10
 ```
 
 ## 命令一览
@@ -43,14 +46,13 @@ export GITHUB_REPO="你的用户名/仓库名"
 ## 环境变量
 
 - `GITHUB_REPO` – GitHub 仓库 `owner/repo`
-- `GITHUB_TOKEN` – 私有仓库或提高 API 限流时需要
 - `DOWNLOAD_DIR` – 缓存目录，默认 `~/.cache/kernel-manager`
 
 ## 文件说明
 
-- `build-kernel.yml` – 通用内核构建工作流（支持 Git 仓库或 kernel.org 最新稳定版）
-- `trigger-bbrv3.yml` – 调用工作流，构建 Google BBRv3 内核
-- `trigger-stable.yml` – 调用工作流，构建最新稳定内核
-- `kernel-manager.sh` – 内核下载/安装/切换脚本
+- `build-kernel.yml` – 可复用工作流（下载、编译kernel.org官方源码）
+- `trigger-bbrv3.yml` – 手动触发，构建带BBRv3的内核
+- `trigger-stable.yml` – 手动触发，构建最新稳定内核
+- `kernel-manager.sh` – 内核下载/安装/卸载脚本
 
 
