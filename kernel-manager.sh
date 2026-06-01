@@ -8,9 +8,8 @@ set -euo pipefail
 # 全局缓存：GitHub API 原始响应
 CACHED_RELEASES_DATA=""
 
-# 辅助函数
 info() {
-    echo "[INFO] $*"
+    echo "[INFO] $*" >&2
 }
 
 error() {
@@ -18,12 +17,10 @@ error() {
     exit 1
 }
 
-# 检查执行权限
 if [[ $EUID -ne 0 ]]; then
     error "此脚本必须以 root 用户执行"
 fi
 
-# 依赖检查
 for cmd in curl jq dpkg apt-get update-grub; do
     if ! command -v "$cmd" &>/dev/null; then
         error "缺少命令 $cmd"
@@ -34,7 +31,6 @@ done
 GITHUB_REPO="${GITHUB_REPO:-hellooe/Latest-Kernel}"
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-/root/.cache/kernel-manager}"
 
-# 获取并缓存 GitHub API 数据（仅第一次调用时获取）
 fetch_releases_data() {
     if [[ -n "$CACHED_RELEASES_DATA" ]]; then
         return
@@ -48,12 +44,11 @@ fetch_releases_data() {
     fi
 }
 
-# 获取版本列表
 get_versions() {
     fetch_releases_data
     local versions
     versions=$(jq -r '
-        .[].assets[] | select(.name | test("^kernel-.+\\.tar\\.gz$")) |
+        .[].assets[] | select(.name | test("^kernel-[0-9].+\\.tar\\.gz$")) |
         .name | sub("kernel-"; "") | sub("\\.tar\\.gz$"; "")
     ' <<<"$CACHED_RELEASES_DATA" | sort -V | uniq)
     if [[ -z "$versions" ]]; then
@@ -63,7 +58,6 @@ get_versions() {
     fi
 }
 
-# 获取指定版本的下载 URL
 get_download_url() {
     local version="$1"
     fetch_releases_data
@@ -77,7 +71,6 @@ get_download_url() {
     echo "$url"
 }
 
-# 下载并解压内核包（设置全局数组 DEB_FILES）
 download_kernel() {
     local version="$1"
     local url
@@ -87,10 +80,8 @@ download_kernel() {
     local archive="${DOWNLOAD_DIR}/kernel-${version}.tar.gz"
     local extract_dir="${DOWNLOAD_DIR}/kernel-${version}"
 
-    # 下载或验证缓存
     if [[ -f "$archive" ]]; then
         info "发现已缓存文件: $archive"
-        # 验证压缩包完整性
         if ! tar -tzf "$archive" &>/dev/null; then
             info "缓存文件损坏，重新下载"
             rm -f "$archive"
@@ -114,7 +105,6 @@ download_kernel() {
     info "解压到 $extract_dir"
     tar -xzf "$archive" -C "$extract_dir"
 
-    # 查找所有 .deb 文件（支持子目录）
     local deb_files=()
     while IFS= read -r -d '' f; do
         deb_files+=("$f")
@@ -124,16 +114,20 @@ download_kernel() {
         error "压缩包中没有 .deb 文件"
     fi
 
-    # 通过全局数组返回结果
     DEB_FILES=("${deb_files[@]}")
 }
 
-# 安装内核（同时安装 image 和 headers）
+escape_regex() {
+    # 转义所有 POSIX 扩展正则表达式中的元字符
+    # 字符列表: . ^ $ [ ] { } ( ) | * + ? \
+    echo "$1" | sed 's/[.[\^$*+?{|}]/\\&/g'
+}
+
 install_kernel() {
     local version="$1"
-
-    # 安装前检查：是否已安装
-    if dpkg-query -W -f='${Package}\n' | grep -qE "^linux-image-${version}(-|$)"; then
+    local escaped_version
+    escaped_version=$(escape_regex "$version")
+    if dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -qE "^linux-image-${escaped_version}(-|$)"; then
         error "内核版本 ${version} 已安装，请先卸载或使用其他版本"
     fi
 
@@ -141,7 +135,6 @@ install_kernel() {
     download_kernel "$version"
     local deb_files=("${DEB_FILES[@]}")
 
-    # 分类：image deb 和 headers deb
     local image_debs=()
     local headers_debs=()
     for deb in "${deb_files[@]}"; do
@@ -158,43 +151,73 @@ install_kernel() {
         error "未找到任何 linux-image .deb 文件"
     fi
 
-    # 架构检查
+    local selected_image_deb=""
+    if [[ ${#image_debs[@]} -eq 1 ]]; then
+        selected_image_deb="${image_debs[0]}"
+    else
+        echo "发现多个内核镜像包：" >&2
+        for i in "${!image_debs[@]}"; do
+            local pkg_name_i
+            pkg_name_i=$(dpkg-deb -f "${image_debs[$i]}" Package)
+            echo "  $((i+1)). $pkg_name_i (${image_debs[$i]})" >&2
+        done
+        read -p "请选择要安装的内核镜像 (1-${#image_debs[@]}): " choice
+        if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ $choice -lt 1 ]] || [[ $choice -gt ${#image_debs[@]} ]]; then
+            error "无效选择"
+        fi
+        selected_image_deb="${image_debs[$((choice-1))]}"
+    fi
+
     local pkg_arch
-    pkg_arch=$(dpkg-deb -f "${image_debs[0]}" Architecture)
+    pkg_arch=$(dpkg-deb -f "$selected_image_deb" Architecture)
     local sys_arch
     sys_arch=$(dpkg --print-architecture)
     if [[ "$pkg_arch" != "all" && "$pkg_arch" != "$sys_arch" ]]; then
         error "内核架构 $pkg_arch 与系统架构 $sys_arch 不匹配"
     fi
 
-    # 收集所有要安装的包名
-    local all_pkgs=()
-    for deb in "${image_debs[@]}" "${headers_debs[@]}"; do
+    local selected_pkg_name
+    selected_pkg_name=$(dpkg-deb -f "$selected_image_deb" Package)
+    local kernel_ver="${selected_pkg_name#linux-image-}"
+
+    local matched_headers_debs=()
+    for deb in "${headers_debs[@]}"; do
+        local header_pkg
+        header_pkg=$(dpkg-deb -f "$deb" Package)
+        if [[ "$header_pkg" =~ ^linux-headers-"${kernel_ver}"(-|$) ]]; then
+            matched_headers_debs+=("$deb")
+        fi
+    done
+
+    if [[ ${#matched_headers_debs[@]} -eq 0 ]]; then
+        echo "警告：未找到与内核 ${selected_pkg_name} 匹配的 headers 包，将仅安装内核镜像" >&2
+    fi
+
+    local all_pkgs=("$selected_pkg_name")
+    for deb in "${matched_headers_debs[@]}"; do
         all_pkgs+=("$(dpkg-deb -f "$deb" Package)")
     done
 
-    echo "将要安装以下内核相关包："
-    printf "  %s\n" "${all_pkgs[@]}"
+    echo "将要安装以下内核相关包：" >&2
+    printf "  %s\n" "${all_pkgs[@]}" >&2
     read -p "确认安装？(y/N) " -r confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "取消安装"
+        echo "取消安装" >&2
         exit 0
     fi
 
-    apt-get install -y "${image_debs[@]}" "${headers_debs[@]}"
+    apt-get install -y "$selected_image_deb" "${matched_headers_debs[@]}"
 
     info "更新 GRUB 配置..."
     update-grub
 
-    # 安装成功后清理解压目录（保留 .tar.gz 缓存）
     local extract_dir="${DOWNLOAD_DIR}/kernel-${version}"
     rm -rf "$extract_dir"
     info "已清理临时解压目录"
 
-    echo "安装完成。"
+    echo "安装完成。请重启系统以加载新内核。" >&2
 }
 
-# 卸载内核（同时卸载 image 和 headers，但保留 -common 包）
 uninstall_kernel() {
     local version="$1"
     local image_pkg=""
@@ -202,9 +225,8 @@ uninstall_kernel() {
     local installed_pkgs
     installed_pkgs=$(dpkg-query -W -f='${Package}\n' 2>/dev/null)
 
-    # 转义点号用于精确匹配
     local escaped_version
-    escaped_version=$(printf '%s' "$version" | sed 's/\./\\./g')
+    escaped_version=$(escape_regex "$version")
     for pkg in $installed_pkgs; do
         if [[ "$pkg" =~ ^linux-image-${escaped_version}(-|$) ]] && [[ ! "$pkg" =~ -common$ ]]; then
             image_pkg="$pkg"
@@ -217,20 +239,25 @@ uninstall_kernel() {
         error "未安装匹配版本 $version 的内核包"
     fi
 
-    # 检查是否正在运行
-    local running_pkg=$(dpkg-query -W -f='${Package}\n' | grep -E "^linux-image-$(uname -r)(-|$)" | head -1)
+    local current_version
+    current_version=$(uname -r)
+    local escaped_current
+    escaped_current=$(escape_regex "$current_version")
+    local running_pkg
+    running_pkg=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -E "^linux-image-${escaped_current}(-|$)" | head -1)
+
     if [[ "$image_pkg" == "$running_pkg" ]]; then
-        error "不能卸载当前正在运行的内核 ($running_kernel_version, 包名: $running_pkg)"
+        error "不能卸载当前正在运行的内核 ($current_version, 包名: $running_pkg)"
     fi
 
-    echo "将要卸载以下包："
-    echo "  $image_pkg"
+    echo "将要卸载以下包：" >&2
+    echo "  $image_pkg" >&2
     for hp in "${header_pkgs[@]}"; do
-        echo "  $hp"
+        echo "  $hp" >&2
     done
     read -p "确认卸载？(y/N) " -r confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "取消卸载"
+        echo "取消卸载" >&2
         exit 0
     fi
 
@@ -241,19 +268,18 @@ uninstall_kernel() {
 
     info "更新 GRUB 配置..."
     update-grub
-    echo "卸载完成"
+    echo "卸载完成" >&2
 }
 
-# 清理缓存
 clean_cache() {
     if [[ -d "$DOWNLOAD_DIR" ]]; then
-        echo "将要删除缓存目录: $DOWNLOAD_DIR"
+        echo "将要删除缓存目录: $DOWNLOAD_DIR" >&2
         read -p "确认清理？(y/N) " -r confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             rm -rf "$DOWNLOAD_DIR"
             info "已清理缓存"
         else
-            echo "取消清理"
+            echo "取消清理" >&2
         fi
     else
         info "缓存目录不存在，无需清理"
