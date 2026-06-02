@@ -79,14 +79,7 @@ Clean cache:
 
 ## Requirements
 
-Target system:
-
-```bash
-apt-get update
-apt-get install -y curl jq
-```
-
-The script must run as `root` and requires `dpkg`, `apt-get`, `tar`, `find`, and `update-grub`.
+The script must run as `root` and requires `dpkg`, `apt-get`, `tar`, `find`, `curl`, `jq` and `update-grub`.
 
 ## Environment
 
