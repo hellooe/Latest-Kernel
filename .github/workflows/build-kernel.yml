@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       kernel_version:
-        description: 'Kernel version (e.g., "6.17", "7.0") – will use linux-${version}.y branch'
+        description: 'Kernel version (e.g., "6.12", "7.0") – will use linux-${version}.y branch'
         required: true
         type: string
       apply_bbr3_patch:
@@ -42,11 +42,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
+
       - name: Free up disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
           sudo rm -rf /usr/share/swift /usr/local/.ghcup /usr/share/az_*
-          docker rmi $(docker images -q) || true
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -57,23 +58,29 @@ jobs:
             lz4 zstd xz-utils libdw-dev jq \
             git gcc-13
 
-      - name: Obtain kernel source
+      - name: Obtain kernel source (with branch validation)
         env:
           VERSION: ${{ inputs.kernel_version }}
         run: |
           BRANCH="linux-${VERSION}.y"
-          echo "Cloning branch $BRANCH from stable kernel tree..."
+          if ! git ls-remote --heads git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git "$BRANCH" | grep -q "$BRANCH"; then
+            echo "ERROR: Branch $BRANCH does NOT exist in the stable kernel tree"
+            exit 1
+          fi
           git clone --depth 1 --branch "$BRANCH" \
             git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source
 
-      - name: Apply BBRv3 patch (if requested)
+      - name: Apply BBRv3 patch (with availability check)
         if: ${{ inputs.apply_bbr3_patch == true }}
         working-directory: ./linux-source
         env:
           VERSION: ${{ inputs.kernel_version }}
         run: |
           PATCH_URL="https://raw.githubusercontent.com/CachyOS/kernel-patches/refs/heads/master/${VERSION}/0002-bbr3.patch"
-          echo "Downloading BBRv3 patch from $PATCH_URL"
+          if ! wget --spider "$PATCH_URL" 2>/dev/null; then
+            echo "ERROR: BBRv3 patch not found for kernel version $VERSION"
+            exit 1
+          fi
           wget -O 0002-bbr3.patch "$PATCH_URL"
           git config user.email "builder@localhost"
           git config user.name "Kernel Builder"
@@ -81,7 +88,6 @@ jobs:
             echo "ERROR: Failed to apply BBRv3 patch"
             exit 1
           fi
-          echo "BBRv3 patch applied successfully"
 
       - name: Configure kernel
         working-directory: ./linux-source
@@ -90,7 +96,7 @@ jobs:
         run: |
           CONFIG_PATH="../$CONFIG_FILE"
           if [[ ! -f "$CONFIG_PATH" ]]; then
-            echo "ERROR: Config file not found: $CONFIG_PATH"
+            echo "ERROR: Config file not found"
             exit 1
           fi
           cp "$CONFIG_PATH" .config
@@ -104,7 +110,6 @@ jobs:
         run: |
           FULL_VERSION=$(make kernelrelease)
           echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
-          echo "Final kernel version: $FULL_VERSION"
 
       - name: Compile kernel
         working-directory: ./linux-source
