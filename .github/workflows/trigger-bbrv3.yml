@@ -2,6 +2,12 @@ name: Build BBRv3 Kernel
 
 on:
   workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Kernel version (e.g., 6.12, 7.0) – will use linux-${version}.y branch'
+        required: true
+        default: '6.12'
+        type: string
 
 permissions:
   contents: write
@@ -10,7 +16,7 @@ jobs:
   call-build:
     uses: ./.github/workflows/build-kernel.yml
     with:
-      kernel_version: '6.12'
+      kernel_version: ${{ github.event.inputs.kernel_version }}
       apply_bbr3_patch: true
       config_file: 'config'
       release_tag_prefix: 'bbrv3-'
