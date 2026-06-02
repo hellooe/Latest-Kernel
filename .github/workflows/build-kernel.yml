@@ -139,7 +139,6 @@ jobs:
           body: |
             Built from Linux stable tree (version ${{ inputs.kernel_version }})
             ${{ inputs.apply_bbr3_patch == true && 'BBRv3 patch applied (from CachyOS)' || 'No extra patches applied' }}
-            Configuration: `${{ inputs.config_file }}` from this repo.
           files: |
             kernel-${{ steps.final_version.outputs.version }}.tar.gz
             config-${{ steps.final_version.outputs.version }}.tar.gz
