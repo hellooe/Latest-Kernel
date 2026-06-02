@@ -79,14 +79,7 @@ export GITHUB_REPO="owner/repo"
 
 ## 依赖
 
-目标系统：
-
-```bash
-apt-get update
-apt-get install -y curl jq
-```
-
-脚本必须以 `root` 运行，并依赖 `dpkg`、`apt-get`、`tar`、`find`、`update-grub`。
+脚本必须以 `root` 运行，并依赖 `dpkg`、`apt-get`、`tar`、`find`、`curl`、`jq`、`update-grub`。
 
 ## 环境变量
 
