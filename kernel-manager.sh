@@ -31,6 +31,10 @@ done
 GITHUB_REPO="${GITHUB_REPO:-hellooe/Latest-Kernel}"
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-/root/.cache/kernel-manager}"
 
+escape_regex() {
+    echo "$1" | sed 's/[.[\^$*+?{|}]/\\&/g'
+}
+
 fetch_releases_data() {
     if [[ -n "$CACHED_RELEASES_DATA" ]]; then
         return
@@ -117,12 +121,6 @@ download_kernel() {
     DEB_FILES=("${deb_files[@]}")
 }
 
-escape_regex() {
-    # 转义所有 POSIX 扩展正则表达式中的元字符
-    # 字符列表: . ^ $ [ ] { } ( ) | * + ? \
-    echo "$1" | sed 's/[.[\^$*+?{|}]/\\&/g'
-}
-
 install_kernel() {
     local version="$1"
     local escaped_version
@@ -161,10 +159,15 @@ install_kernel() {
             pkg_name_i=$(dpkg-deb -f "${image_debs[$i]}" Package)
             echo "  $((i+1)). $pkg_name_i (${image_debs[$i]})" >&2
         done
-        read -p "请选择要安装的内核镜像 (1-${#image_debs[@]}): " choice
-        if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ $choice -lt 1 ]] || [[ $choice -gt ${#image_debs[@]} ]]; then
-            error "无效选择"
-        fi
+        local choice=""
+        while true; do
+            read -p "请选择要安装的内核镜像 (1-${#image_debs[@]}): " choice
+            if [[ -z "$choice" || ! "$choice" =~ ^[0-9]+$ || $choice -lt 1 || $choice -gt ${#image_debs[@]} ]]; then
+                echo "无效输入，请输入 1-${#image_debs[@]} 之间的数字" >&2
+                continue
+            fi
+            break
+        done
         selected_image_deb="${image_debs[$((choice-1))]}"
     fi
 
@@ -206,9 +209,10 @@ install_kernel() {
         exit 0
     fi
 
+    apt-get update || error "apt-get update 失败，请检查网络或源配置"
+
     apt-get install -y "$selected_image_deb" "${matched_headers_debs[@]}"
 
-    info "更新 GRUB 配置..."
     update-grub
 
     local extract_dir="${DOWNLOAD_DIR}/kernel-${version}"
@@ -220,23 +224,43 @@ install_kernel() {
 
 uninstall_kernel() {
     local version="$1"
-    local image_pkg=""
+    local escaped_version
+    escaped_version=$(escape_regex "$version")
+    local image_pkgs=()
     local header_pkgs=()
     local installed_pkgs
     installed_pkgs=$(dpkg-query -W -f='${Package}\n' 2>/dev/null)
 
-    local escaped_version
-    escaped_version=$(escape_regex "$version")
-    for pkg in $installed_pkgs; do
+    while IFS= read -r pkg; do
         if [[ "$pkg" =~ ^linux-image-${escaped_version}(-|$) ]] && [[ ! "$pkg" =~ -common$ ]]; then
-            image_pkg="$pkg"
+            image_pkgs+=("$pkg")
         elif [[ "$pkg" =~ ^linux-headers-${escaped_version}(-|$) ]] && [[ ! "$pkg" =~ -common$ ]]; then
             header_pkgs+=("$pkg")
         fi
-    done
+    done <<< "$installed_pkgs"
 
-    if [[ -z "$image_pkg" ]]; then
+    if [[ ${#image_pkgs[@]} -eq 0 ]]; then
         error "未安装匹配版本 $version 的内核包"
+    fi
+
+    local selected_image_pkg=""
+    if [[ ${#image_pkgs[@]} -eq 1 ]]; then
+        selected_image_pkg="${image_pkgs[0]}"
+    else
+        echo "发现多个匹配的内核包：" >&2
+        for i in "${!image_pkgs[@]}"; do
+            echo "  $((i+1)). ${image_pkgs[$i]}" >&2
+        done
+        local choice=""
+        while true; do
+            read -p "请选择要卸载的内核包 (1-${#image_pkgs[@]}): " choice
+            if [[ -z "$choice" || ! "$choice" =~ ^[0-9]+$ || $choice -lt 1 || $choice -gt ${#image_pkgs[@]} ]]; then
+                echo "无效输入，请输入 1-${#image_pkgs[@]} 之间的数字" >&2
+                continue
+            fi
+            break
+        done
+        selected_image_pkg="${image_pkgs[$((choice-1))]}"
     fi
 
     local current_version
@@ -244,15 +268,23 @@ uninstall_kernel() {
     local escaped_current
     escaped_current=$(escape_regex "$current_version")
     local running_pkg
-    running_pkg=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -E "^linux-image-${escaped_current}(-|$)" | head -1)
+    running_pkg=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -E "^linux-image-${escaped_current}(-|$)" | head -1 || true)
 
-    if [[ "$image_pkg" == "$running_pkg" ]]; then
+    if [[ "$selected_image_pkg" == "$running_pkg" ]]; then
         error "不能卸载当前正在运行的内核 ($current_version, 包名: $running_pkg)"
     fi
 
-    echo "将要卸载以下包：" >&2
-    echo "  $image_pkg" >&2
+    local kernel_ver="${selected_image_pkg#linux-image-}"
+    local matched_headers=()
     for hp in "${header_pkgs[@]}"; do
+        if [[ "$hp" =~ ^linux-headers-"${kernel_ver}"(-|$) ]]; then
+            matched_headers+=("$hp")
+        fi
+    done
+
+    echo "将要卸载以下包：" >&2
+    echo "  $selected_image_pkg" >&2
+    for hp in "${matched_headers[@]}"; do
         echo "  $hp" >&2
     done
     read -p "确认卸载？(y/N) " -r confirm
@@ -261,12 +293,11 @@ uninstall_kernel() {
         exit 0
     fi
 
-    apt-get purge -y "$image_pkg"
-    for hp in "${header_pkgs[@]}"; do
+    apt-get purge -y "$selected_image_pkg"
+    for hp in "${matched_headers[@]}"; do
         apt-get purge -y "$hp"
     done
 
-    info "更新 GRUB 配置..."
     update-grub
     echo "卸载完成" >&2
 }
@@ -286,7 +317,6 @@ clean_cache() {
     fi
 }
 
-# 主命令处理
 case "${1:-}" in
     list)
         echo "从 ${GITHUB_REPO} 获取可用内核版本："
