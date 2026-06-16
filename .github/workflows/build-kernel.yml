@@ -26,7 +26,7 @@ on:
         required: true
         type: string
       bbr_patch_url:
-        description: 'URL to the BBRv3 patch file (MUST be provided when apply_bbr3_patch is true)'
+        description: 'URL to download BBRv3 patch file (MUST be provided when apply_bbr3_patch is true)'
         required: false
         type: string
         default: ''
@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - name: Checkout repository (for config file)
+      - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
@@ -75,7 +75,7 @@ jobs:
           git clone --depth 1 --branch "$BRANCH" \
             git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source
 
-      - name: Apply BBRv3 patch (requires custom URL)
+      - name: Apply BBRv3 patch (with fallback methods)
         if: ${{ inputs.apply_bbr3_patch == true }}
         working-directory: ./linux-source
         env:
@@ -86,16 +86,26 @@ jobs:
             exit 1
           fi
 
-          if ! wget --spider "$PATCH_URL" 2>/dev/null; then
-            echo "ERROR: Patch not found at $PATCH_URL"
+          if ! wget -O bbr3.patch "$PATCH_URL"; then
+            echo "ERROR: Failed to download patch from $PATCH_URL"
             exit 1
           fi
 
-          wget -O bbr3.patch "$PATCH_URL"
           git config user.email "builder@localhost"
           git config user.name "Kernel Builder"
-          if ! git am bbr3.patch; then
-            echo "ERROR: Failed to apply BBRv3 patch"
+
+          if git am bbr3.patch 2>/dev/null; then
+            echo "BBRv3 patch applied"
+          elif git apply --whitespace=fix bbr3.patch 2>/dev/null; then
+            echo "Patch applied with git apply"
+            git add -A
+            git commit -m "Apply BBRv3 patch"
+          elif patch -p1 < bbr3.patch 2>/dev/null; then
+            echo "Patch applied with patch"
+            git add -A
+            git commit -m "Apply BBRv3 patch"
+          else
+            echo "ERROR: Failed to apply patch with all methods (git am, git apply, patch)"
             exit 1
           fi
 
