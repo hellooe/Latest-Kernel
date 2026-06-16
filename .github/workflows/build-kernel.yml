@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       apply_bbr3_patch:
-        description: 'Whether to apply BBRv3 patch from CachyOS'
+        description: 'Whether to apply BBRv3 patch'
         required: false
         type: boolean
         default: false
@@ -25,6 +25,11 @@ on:
         description: 'Prefix for release name'
         required: true
         type: string
+      bbr_patch_url:
+        description: 'URL to the BBRv3 patch file (MUST be provided when apply_bbr3_patch is true)'
+        required: false
+        type: string
+        default: ''
     secrets:
       GH_TOKEN:
         description: 'GitHub token for creating releases'
@@ -70,21 +75,26 @@ jobs:
           git clone --depth 1 --branch "$BRANCH" \
             git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source
 
-      - name: Apply BBRv3 patch (with availability check)
+      - name: Apply BBRv3 patch (requires custom URL)
         if: ${{ inputs.apply_bbr3_patch == true }}
         working-directory: ./linux-source
         env:
-          VERSION: ${{ inputs.kernel_version }}
+          PATCH_URL: ${{ inputs.bbr_patch_url }}
         run: |
-          PATCH_URL="https://raw.githubusercontent.com/CachyOS/kernel-patches/refs/heads/master/${VERSION}/0002-bbr3.patch"
-          if ! wget --spider "$PATCH_URL" 2>/dev/null; then
-            echo "ERROR: BBRv3 patch not found for kernel version $VERSION"
+          if [ -z "$PATCH_URL" ]; then
+            echo "ERROR: bbr_patch_url must be provided when apply_bbr3_patch is true"
             exit 1
           fi
-          wget -O 0002-bbr3.patch "$PATCH_URL"
+
+          if ! wget --spider "$PATCH_URL" 2>/dev/null; then
+            echo "ERROR: Patch not found at $PATCH_URL"
+            exit 1
+          fi
+
+          wget -O bbr3.patch "$PATCH_URL"
           git config user.email "builder@localhost"
           git config user.name "Kernel Builder"
-          if ! git am 0002-bbr3.patch; then
+          if ! git am bbr3.patch; then
             echo "ERROR: Failed to apply BBRv3 patch"
             exit 1
           fi
@@ -138,7 +148,7 @@ jobs:
           name: ${{ inputs.release_name_prefix }} ${{ steps.final_version.outputs.version }}
           body: |
             Built from Linux stable tree (version ${{ inputs.kernel_version }})
-            ${{ inputs.apply_bbr3_patch == true && 'BBRv3 patch applied (from CachyOS)' || 'No extra patches applied' }}
+            ${{ inputs.apply_bbr3_patch == true && format('BBRv3 patch applied from: {0}', inputs.bbr_patch_url) || 'No extra patches applied' }}
           files: |
             kernel-${{ steps.final_version.outputs.version }}.tar.gz
             config-${{ steps.final_version.outputs.version }}.tar.gz
