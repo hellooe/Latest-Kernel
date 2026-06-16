@@ -2,12 +2,12 @@
 
 语言：[English](README.md) | 简体中文
 
-使用 GitHub Actions 构建自定义 Linux 内核 `.deb` 包，并通过 `kernel-manager.sh` 在 Debian/Ubuntu 上安装或卸载。
+使用 GitHub Actions 构建自定义 Linux 内核 `.deb` 包，并通过 `kernel-manager.sh` 在 Debian/Ubuntu 上安装或卸载内核。
 
 ## 功能
 
 - 从 `linux-${kernel_version}.y` 构建 Linux stable 内核。
-- 可选应用 CachyOS BBRv3 patch。
+- 可选应用来自用户指定 URL 的 BBRv3 补丁。
 - 发布 Release 资源：
   - `kernel-<version>.tar.gz`
   - `config-<version>.tar.gz`
@@ -30,11 +30,12 @@ kernel-manager.sh                     安装/卸载脚本
 - `Build Latest Stable Kernel`
 - `Build BBRv3 Kernel`
 
-填写 `kernel_version`，例如：
+对于普通 stable 内核，只需填写 kernel_version（例如 7.0）。
+对于 BBRv3 内核，必须提供两个输入：
 
-```text
-7.0
-```
+- `kernel_version` – 例如 6.12
+
+- `bbr_patch_url` – BBRv3 补丁文件的完整 URL
 
 构建完成后会创建 GitHub Release，并上传内核包。
 
@@ -93,7 +94,7 @@ export GITHUB_REPO="owner/repo"
 - 保留至少一个可正常启动的旧内核。
 - 安装新内核后需要重启。
 - 脚本不会卸载当前正在运行的内核。
-- BBRv3 patch 是否可用取决于 CachyOS。
+- 构建BBRv3 内核时，补丁必须由用户在构建时提供，将从指定的 URL 下载补丁文件。
 
 ## 许可证
 
