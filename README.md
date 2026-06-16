@@ -7,7 +7,7 @@ Build custom Linux kernel `.deb` packages with GitHub Actions, then install or r
 ## What It Does
 
 - Builds Linux stable kernels from `linux-${kernel_version}.y`.
-- Optionally applies the CachyOS BBRv3 patch.
+- Optionally applies the BBRv3 patch from a user‑specified URL.
 - Publishes Release assets:
   - `kernel-<version>.tar.gz`
   - `config-<version>.tar.gz`
@@ -30,11 +30,12 @@ Run one of these workflows from GitHub Actions:
 - `Build Latest Stable Kernel`
 - `Build BBRv3 Kernel`
 
-Set `kernel_version`, for example:
+For the standard stable kernel, set kernel_version only (e.g., 7.0).
+For the BBRv3 kernel, you must provide two inputs:
 
-```text
-7.0
-```
+- `kernel_version` – e.g., 6.12
+
+- `bbr_patch_url` – the full URL to download the BBRv3 patch file
 
 The workflow creates a GitHub Release containing the built kernel packages.
 
@@ -93,7 +94,7 @@ The script must run as `root` and requires `dpkg`, `apt-get`, `tar`, `find`, `cu
 - Keep at least one known-good old kernel installed.
 - Reboot after installing a new kernel.
 - The script refuses to uninstall the currently running kernel.
-- BBRv3 patch availability depends on CachyOS.
+- For BBRv3 builds, the patch source must be provided by the user at build time.
 
 ## License
 
