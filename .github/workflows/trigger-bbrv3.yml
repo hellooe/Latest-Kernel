@@ -8,6 +8,10 @@ on:
         required: true
         default: '6.12'
         type: string
+      bbr_patch_url:
+        description: 'URL to the BBRv3 patch file (MUST be provided)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,5 +25,6 @@ jobs:
       config_file: 'config'
       release_tag_prefix: 'bbrv3-'
       release_name_prefix: 'BBRv3 Kernel'
+      bbr_patch_url: ${{ github.event.inputs.bbr_patch_url }}
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
